@@ -20,4 +20,5 @@ from django.urls import include, path
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('helloworld/', include('frps_proxy_backend.apps.helloworld.urls')),
+    path("plugin/", include("frps_proxy_backend.apps.core.urls")),
 ]
