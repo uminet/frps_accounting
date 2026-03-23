@@ -1,0 +1,15 @@
+bindPort = 44555
+proxyBindAddr = "127.0.0.1"
+
+allowPorts = [
+    { start = 44571, end = 44579}
+]
+transport.tls.force = true
+
+
+[[httpPlugins]]
+name = "manager"
+addr = "127.0.0.1:8000"
+path = "/plugin/handler"
+# ops = ["Login", "NewProxy", "CloseProxy", "Ping", "NewWorkConn", "NewUserConn"]
+ops = ["NewProxy", "CloseProxy"]

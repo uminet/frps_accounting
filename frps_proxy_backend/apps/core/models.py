@@ -1,210 +1,151 @@
+from django.db import models
+from django.core.validators import MinValueValidator, MaxValueValidator
 from django.utils import timezone
 import uuid
-from django.db import IntegrityError, models
-from django.core.validators import MinValueValidator, MaxValueValidator
-from django.core.exceptions import ValidationError
+
 
 class ProxyType(models.TextChoices):
     TCP = "tcp", "TCP"
     UDP = "udp", "UDP"
+    STCP = "stcp", "STCP"
+    SUDP = "sudp", "SUDP"
     HTTP = "http", "HTTP"
-
+    HTTPS = "https", "HTTPS"
+    
 class User(models.Model):
+    class Exceptions:
+        class UserNotFound(Exception):
+            pass
+        class UserInvalid(Exception):
+            pass
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         INACTIVE = "inactive", "Inactive"
         SUSPENDED = "suspended", "Suspended"
         PENDING = "pending", "Pending"
         
+    # data
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    username = models.CharField(max_length=150, unique=True)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
-    plan = models.ForeignKey("Plan", on_delete=models.PROTECT, related_name="users")
+    email = models.EmailField(max_length=254, unique=True)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.INACTIVE)
     note = models.TextField(blank=True, null=True)
-    expires_at = models.DateTimeField(blank=True, null=True)
+    expired_at = models.DateTimeField(blank=True, null=True)
     
+    # permission
+    port_range_start = models.PositiveIntegerField(default=20000, validators=[MinValueValidator(1), MaxValueValidator(65535)])
+    port_range_end = models.PositiveIntegerField(default=30000, validators=[MinValueValidator(1), MaxValueValidator(65535)])
+    allowed_proxy_types = models.JSONField(default=list)
+    
+    max_active_proxies = models.PositiveIntegerField(default=1)
+    max_bandwidth_mbps = models.FloatField(default=5.0, validators=[MinValueValidator(0.0)])
+    max_average_bandwidth_mbps = models.FloatField(default=1.0, validators=[MinValueValidator(0.0)])
+    average_bandwidth_window_seconds = models.PositiveIntegerField(default=300, validators=[MinValueValidator(1)])
+    max_concurrent_conns = models.PositiveIntegerField(default=50, validators=[MinValueValidator(1)])
+
+    # metadata
+    metadata = models.JSONField(default=dict, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-            
+    
     @property
-    def is_usable(self):
+    def is_valid(self) -> bool:
+        from django.utils import timezone
         if self.status != self.Status.ACTIVE:
             return False
-        if self.expires_at and self.expires_at <= timezone.now():
+        if self.expired_at and self.expired_at < timezone.now():
             return False
         return True
-        
+    
+    def check_expiration(self):
+        if not self.status == self.Status.ACTIVE:
+            return
+        if self.expired_at and self.expired_at < timezone.now():
+            self.status = self.Status.INACTIVE
+            self.save(update_fields=["status", "updated_at"])
     
 class AccessToken(models.Model):
-    class InvalidAccessToken(Exception):
-        pass
-    class UnusableAccessToken(Exception):
-        pass
-    
+    class Exceptions:
+        class TokenNotFound(Exception):
+            pass
+        class TokenInvalid(Exception):
+            pass
+        
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         INACTIVE = "inactive", "Inactive"
+        SUSPENDED = "suspended", "Suspended"
         
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="access_tokens")
-    token_hash = models.CharField(max_length=255, unique=True)  # store hash of the token for security
+    token_hash = models.CharField(max_length=64, unique=True)
     token_prefix = models.CharField(max_length=8)
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
-    expires_at = models.DateTimeField(blank=True, null=True)
-    note = models.TextField(blank=True, null=True)
     
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.INACTIVE)
+    expired_at = models.DateTimeField(blank=True, null=True)
+    last_used_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    last_used_at = models.DateTimeField(blank=True, null=True)
-
-            
+    
     @classmethod
-    def hash_token(cls, *, token):
+    def hash_token(cls, token: str) -> str:
         import hashlib
         return hashlib.sha256(token.encode()).hexdigest()
 
     @classmethod
-    def prefix_token(cls, *, token):
+    def prefix_token(cls, token: str) -> str:
         return token[:8]
-        
+    
     @classmethod
-    def generate_access_token(cls, *, user: User, note: str = ""):
-        def _generate_token():
-            import secrets
-            token = secrets.token_urlsafe(48)
-            return token
-            
-        timeout = 20
-        while timeout > 0:
-            timeout -= 1
-            token = _generate_token()
-            token_hash = cls.hash_token(token=token)
-            token_prefix = cls.prefix_token(token=token)
-            try:
-                access_token = cls.objects.create(
-                    user=user,
-                    token_hash=token_hash,
-                    token_prefix=token_prefix,
-                    note=note
-                )
-                return token, access_token
-            except IntegrityError:
-                continue  # token collision, try again
-        raise RuntimeError("Failed to generate unique access token after multiple attempts")
-        
+    def generate_token(cls) -> str:
+        import secrets
+        return secrets.token_urlsafe(32)
+    
     @classmethod
-    def resolve_token(cls, *, token):
-        access_token = cls.objects.select_related("user", "user__plan").filter(
-            token_hash=cls.hash_token(token=token),
-        ).first()
-        if not access_token:
-            raise cls.InvalidAccessToken()
-        if not access_token.is_usable:
-            raise cls.UnusableAccessToken()
-        return access_token
+    def create_token(cls, user: User) -> str:
+        while True:
+            token = cls.generate_token()
+            token_hash = cls.hash_token(token)
+            token_prefix = cls.prefix_token(token)
+            if not cls.objects.filter(token_hash=token_hash).exists():
+                break
+        cls.objects.create(user=user, token_hash=token_hash, token_prefix=token_prefix, status=cls.Status.ACTIVE)
+        return token
+        
     
     @property
-    def is_usable(self):
+    def is_valid(self) -> bool:
+        from django.utils import timezone
         if self.status != self.Status.ACTIVE:
             return False
-        if self.expires_at and self.expires_at <= timezone.now():
+        if self.expired_at and self.expired_at < timezone.now():
             return False
-        if not self.user.is_usable:
+        if not self.user.is_valid:
             return False
         return True
-
     
-    class Meta:
-        indexes = [
-            models.Index(fields=["token_prefix"])
-        ]
-
-    
-
-class Plan(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=100, unique=True)
-    
-    # permissions
-    allowed_proxy_types = models.JSONField(default=list)
-    
-    # resources
-    max_active_proxies = models.IntegerField(default=1)
-    
-    port_range_start = models.IntegerField(default=20000, validators=[MinValueValidator(1), MaxValueValidator(65535)])
-    port_range_end = models.IntegerField(default=30000, validators=[MinValueValidator(1), MaxValueValidator(65535)])
-    
-    max_ports = models.IntegerField(default=1)
-    max_bandwidth_mbps = models.FloatField(default=5)
-    max_average_bandwidth_mbps = models.FloatField(default=1)
-    average_bandwidth_window_seconds = models.IntegerField(default=300)
-    max_concurrent_conns = models.IntegerField(default=10)
-    
-    # others
-    metadata = models.JSONField(default=dict, blank=True)  # for any extra info
-    
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-    
-    def clean(self):
-        allowed_values = {choice.value for choice in ProxyType}
-
-        if not isinstance(self.allowed_proxy_types, list):
-            raise ValidationError({
-                "allowed_proxy_types": "allowed_proxy_types must be a list"
-            })
-
-        invalid_values = [
-            proxy_type
-            for proxy_type in self.allowed_proxy_types
-            if proxy_type not in allowed_values
-        ]
-        if invalid_values:
-            raise ValidationError({
-                "allowed_proxy_types": f"Invalid proxy types: {invalid_values}"
-            })
-
-        if self.port_range_start > self.port_range_end:
-            raise ValidationError({
-                "port_range_start": "Must be less than or equal to port_range_end"
-            })
-
-    class Meta:
-        indexes = [
-        ]
-    
-
+    def check_expiration(self):
+        if not self.status == self.Status.ACTIVE:
+            return
+        if self.expired_at and self.expired_at < timezone.now():
+            self.status = self.Status.INACTIVE
+            self.save(update_fields=["status", "updated_at"])
+            
 class ProxyLease(models.Model):
     class Status(models.TextChoices):
         ACTIVE = "active", "Active"
         CLOSED = "closed", "Closed"
-        SUSPENDED = "suspended", "Suspended"
-        REJECTED = "rejected", "Rejected"
         
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    token = models.ForeignKey(AccessToken, on_delete=models.CASCADE, related_name="leases")
-    
-    proxy_name = models.CharField(max_length=128)
-    
-    client_local_addr = models.CharField(max_length=255)
-    client_local_port = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(65535)])
-    client_public_addr = models.GenericIPAddressField(blank=True, null=True)
-    
-    server_addr = models.GenericIPAddressField(blank=True, null=True)
-    server_port = models.IntegerField(validators=[MinValueValidator(1), MaxValueValidator(65535)])
-    proxy_type = models.CharField(max_length=20, choices=ProxyType.choices)  # e.g. "tcp", "udp", "http"
+    run_id = models.CharField(max_length=64)
+    proxy_name = models.CharField(max_length=255)
+    token = models.ForeignKey(AccessToken, on_delete=models.CASCADE, related_name="proxy_leases")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="proxy_leases")
+    proxy_type = models.CharField(max_length=20, choices=ProxyType.choices)
+    remote_addr = models.GenericIPAddressField(null=True, blank=True)
+    remote_port = models.PositiveIntegerField(validators=[MinValueValidator(1), MaxValueValidator(65535)])
     
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.ACTIVE)
-    note = models.TextField(blank=True, null=True)
-    
-    opened_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    connected_at = models.DateTimeField(auto_now_add=True)
     closed_at = models.DateTimeField(blank=True, null=True)
-    close_reason = models.CharField(max_length=255, blank=True, null=True)
-    
-    class Meta:
-        indexes = [
-            models.Index(fields=["proxy_name"]),
-            models.Index(fields=["server_addr", "server_port"]),
-            models.Index(fields=["client_public_addr"]),
-        ]
+    close_reason = models.TextField(blank=True, null=True)
+

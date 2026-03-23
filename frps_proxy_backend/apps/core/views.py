@@ -3,6 +3,7 @@ import json
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.shortcuts import render
+from .models import User, AccessToken, ProxyLease
 
 
 def _parse_body(request):
@@ -10,31 +11,18 @@ def _parse_body(request):
         return json.loads(request.body)
     except json.JSONDecodeError:
         return None
-    
-def handle_login(content: dict, context: dict):
-    print("Handling login with content:", content, "and context:", context)
-    return {"reject": False, "unchange": True}
-
-def handle_new_proxy(content: dict, context: dict):
-    print("Handling new proxy with content:", content, "and context:", context)
-    return {"reject": True, "reject_reason": "NewProxy operation is not supported yet"}
 
 def handle_close_proxy(content: dict, context: dict):
+    from .service.auth import handle_close_proxy
     print("Handling close proxy with content:", content, "and context:", context)
-    return {"reject": False, "unchange": True}
+    resp = handle_close_proxy(content=content)
+    return resp.to_dict()
 
-def handle_ping(content: dict, context: dict):
-    print("Handling ping with content:", content, "and context:", context)
-    return {"reject": False, "unchange": True}
-
-def handle_new_work_conn(content: dict, context: dict):
-    print("Handling new work conn with content:", content, "and context:", context)
-    return {"reject": False, "unchange": True}
-
-def handle_new_user_conn(content: dict, context: dict):
-    print("Handling new user conn with content:", content, "and context:", context)
-    return {"reject": False, "unchange": True}
-
+def handle_new_proxy(content: dict, context: dict):
+    from .service.auth import handle_new_proxy
+    print("Handling new proxy with content:", content, "and context:", context)
+    resp = handle_new_proxy(content=content)
+    return resp.to_dict()
 
 @csrf_exempt
 def plugin_handler(request):
@@ -46,6 +34,7 @@ def plugin_handler(request):
     reqid = request.GET.get("reqid")
     
     body = _parse_body(request)
+    print(body)
     if body is None:
         return JsonResponse({"reject": True, "reject_reason": "Invalid JSON body"}, status=400)
     
@@ -60,21 +49,24 @@ def plugin_handler(request):
         "remote_addr": request.META.get("REMOTE_ADDR"),
     }
     
-    if op == "Login":
-        resp = handle_login(content, context)
-    elif op == "NewProxy":
+    if op == "NewProxy":
         resp = handle_new_proxy(content, context)
     elif op == "CloseProxy":
         resp = handle_close_proxy(content, context)
-    elif op == "Ping":
-        resp = handle_ping(content, context)
-    elif op == "NewWorkConn":
-        resp = handle_new_work_conn(content, context)
-    elif op == "NewUserConn":
-        resp = handle_new_user_conn(content, context)
     else:
         return JsonResponse({"reject": True, "reject_reason": f"Unknown operation: {op}"}, status=400)
-    
+    print("Response:", resp)
     return JsonResponse(resp)
     
+    
+@csrf_exempt
+def generate_token(request):
+    from .service.auth import handle_create_token
+    if not request.method == "GET":
+        return JsonResponse({"error": "Only GET method is allowed"}, status=405)
+    email = request.GET.get("email")
+    resp = handle_create_token(email=email)
+    
+    return JsonResponse(resp, status=200 if "token" in resp else 400)
+
     

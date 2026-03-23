@@ -1,0 +1,18 @@
+serverAddr = "127.0.0.1"
+serverPort = 44555
+user = "6mm1KBleOq8pDmNy_kd18pi4b6qVI5pfw0SBjCxG4sE"
+
+[[proxies]]
+name = "test-tcp3"
+type = "udp"
+localIP = "127.0.0.1"
+localPort = 38222
+remotePort = 44573
+
+[[proxies]]
+name = "test-tcp4"
+type = "tcp"
+localIP = "127.0.0.1"
+localPort = 38222
+remotePort = 44574
+
