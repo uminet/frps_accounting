@@ -69,4 +69,31 @@ def generate_token(request):
     
     return JsonResponse(resp, status=200 if "token" in resp else 400)
 
+@csrf_exempt
+def update_tc(request):
+    from .service.tc import handle_update_tc
+    if not request.method == "GET":
+        return JsonResponse({"error": "Only GET method is allowed"}, status=405)
+    total_rate = float(request.GET.get("total_rate", "10"))
+    total_ceil = request.GET.get("total_ceil", None)
+    if total_ceil is not None:
+        total_ceil = float(total_ceil)
+    resp = handle_update_tc(total_garunteed_bandwidth_mbps=total_rate, total_peak_bandwidth_mbps=total_ceil)
+    if "error" in resp:
+        return JsonResponse(resp, status=500)
+    return JsonResponse(resp, status=200)
+
+@csrf_exempt
+def create_tc(request):
+    from .service.tc import handle_create_tc
+    if not request.method == "GET":
+        return JsonResponse({"error": "Only GET method is allowed"}, status=405)
+    total_rate = float(request.GET.get("total_rate", "10"))
+    total_ceil = request.GET.get("total_ceil", None)
+    if total_ceil is not None:
+        total_ceil = float(total_ceil)
+    resp = handle_create_tc(total_garunteed_bandwidth_mbps=total_rate, total_peak_bandwidth_mbps=total_ceil)
+    if "error" in resp:
+        return JsonResponse(resp, status=500)
+    return JsonResponse(resp, status=200)
     
