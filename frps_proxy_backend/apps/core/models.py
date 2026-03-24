@@ -12,6 +12,37 @@ class ProxyType(models.TextChoices):
     HTTP = "http", "HTTP"
     HTTPS = "https", "HTTPS"
     
+class BandwidthPool(models.Model):
+    class Exceptions:
+        class PeakCannotSatisfy(Exception):
+            pass
+        class TotalGarunteeCannotSatisfy(Exception):
+            pass
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.TextField(max_length=64, unique=True)
+    total_bandwidth_mbps = models.FloatField(validators=[MinValueValidator(0)])
+    
+    @classmethod
+    def get_default_pool(cls):
+        pool, _ = cls.objects.get_or_create(
+            name="default",
+            defaults={"total_bandwidth_mbps": 10}
+        )
+        return pool.id
+    
+    def check_enough_bandwidth(self):
+        users_in_pool = User.objects.filter(bandwidth_pool=self)
+        total_user_garunteed_bandwidth_mbps = 0
+        for user in users_in_pool:
+            if user.peak_bandwidth_mbps > self.total_bandwidth_mbps:
+                raise BandwidthPool.Exceptions.PeakCannotSatisfy(f"Peak cannot be satisfied for user {user.id} from pool {self.id}")
+            total_user_garunteed_bandwidth_mbps += user.garunteed_bandwidth_mbps
+        if total_user_garunteed_bandwidth_mbps > self.total_bandwidth_mbps:
+            raise BandwidthPool.Exceptions.TotalGarunteeCannotSatisfy(
+                f"Total bandwidth cannot be satisfied for pool {self.id}, "
+                f"request: {total_user_garunteed_bandwidth_mbps}, have: {self.total_bandwidth_mbps}"
+            )
+            
 class User(models.Model):
     class Exceptions:
         class UserNotFound(Exception):
@@ -32,15 +63,17 @@ class User(models.Model):
     expired_at = models.DateTimeField(blank=True, null=True)
     
     # permission
+    def _default_allowed_proxies():
+        return ["tcp"]
     port_range_start = models.PositiveIntegerField(default=20000, validators=[MinValueValidator(1), MaxValueValidator(65535)])
     port_range_end = models.PositiveIntegerField(default=30000, validators=[MinValueValidator(1), MaxValueValidator(65535)])
-    allowed_proxy_types = models.JSONField(default=list)
+    allowed_proxy_types = models.JSONField(default=_default_allowed_proxies)
     
     max_active_proxies = models.PositiveIntegerField(default=1)
-    max_bandwidth_mbps = models.FloatField(default=5.0, validators=[MinValueValidator(0.0)])
-    max_average_bandwidth_mbps = models.FloatField(default=1.0, validators=[MinValueValidator(0.0)])
-    average_bandwidth_window_seconds = models.PositiveIntegerField(default=300, validators=[MinValueValidator(1)])
-    max_concurrent_conns = models.PositiveIntegerField(default=50, validators=[MinValueValidator(1)])
+    garunteed_bandwidth_mbps = models.FloatField(default=0.5, validators=[MinValueValidator(0.0)])
+    peak_bandwidth_mbps = models.FloatField(default=2, validators=[MinValueValidator(0.0)])
+    max_concurrent_conns = models.PositiveIntegerField(default=10, validators=[MinValueValidator(1)])
+    bandwidth_pool = models.ForeignKey(BandwidthPool, default=BandwidthPool.get_default_pool, on_delete=models.CASCADE)
 
     # metadata
     metadata = models.JSONField(default=dict, null=True, blank=True)
